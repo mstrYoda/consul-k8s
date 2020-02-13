@@ -62,12 +62,19 @@ type ConsulSyncer struct {
 	// ConsulK8STag is the tag value for services registered.
 	ConsulK8STag string
 
-	lock     sync.Mutex
-	once     sync.Once
-	services map[string]struct{} // set of valid service names
-	nodes    map[string]*consulSyncState
-	deregs   map[string]*api.CatalogDeregistration
-	watchers map[string]context.CancelFunc
+	lock sync.Mutex
+	once sync.Once
+	// initialSync is used to ensure that we have received our initial list
+	// of services before we start reaping services. When it is closed,
+	// the initial sync is complete.
+	initialSync chan bool
+	// initialSyncOnce controls operations on the initialSync channel so it
+	// isn't closed more than once.
+	initialSyncOnce sync.Once
+	services        map[string]struct{} // set of valid service names
+	nodes           map[string]*consulSyncState
+	deregs          map[string]*api.CatalogDeregistration
+	watchers        map[string]context.CancelFunc
 }
 
 // consulSyncState keeps track of the state of syncing nodes/services.
@@ -101,6 +108,10 @@ func (s *ConsulSyncer) Sync(rs []*api.CatalogRegistration) {
 		// Add our registration
 		state.Services[r.Service.ID] = r
 	}
+
+	// Signal that the initial sync is complete and our maps have been populated.
+	// We can now safely reap untracked services.
+	s.initialSyncOnce.Do(func() { close(s.initialSync) })
 }
 
 // Run is the long-running runloop for reconciling the local set of
@@ -133,6 +144,13 @@ func (s *ConsulSyncer) Run(ctx context.Context) {
 // This task only marks them for deletion but doesn't perform the actual
 // deletion.
 func (s *ConsulSyncer) watchReapableServices(ctx context.Context) {
+	// We must wait for the initial sync to be complete and our maps to be
+	// populated. If we don't wait, we will reap all services tagged with k8s
+	// because we have no tracked services in our maps yet.
+	select {
+	case <-s.initialSync:
+	}
+
 	opts := api.QueryOptions{
 		AllowStale: true,
 		WaitIndex:  1,
@@ -376,5 +394,8 @@ func (s *ConsulSyncer) init() {
 	}
 	if s.ServicePollPeriod == 0 {
 		s.ServicePollPeriod = ConsulServicePollPeriod
+	}
+	if s.initialSync == nil {
+		s.initialSync = make(chan bool)
 	}
 }

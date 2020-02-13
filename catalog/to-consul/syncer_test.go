@@ -270,6 +270,7 @@ func testConsulSyncer(t *testing.T, client *api.Client) (*ConsulSyncer, func()) 
 		Namespace:         "default",
 		ConsulK8STag:      TestConsulK8STag,
 	}
+	s.init()
 
 	ctx, cancelF := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})
